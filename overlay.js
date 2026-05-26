@@ -1,5 +1,5 @@
 /**
- * Master CRM — Chatwoot Overlay (Digital Master)
+ * Master CRM — Chatwoot Overlay (Digital Master)  v2
  *
  * Adiciona um item "Master CRM" no menu lateral esquerdo do Chatwoot e
  * abre o Kanban (https://atende.salatielbatista.com.br/crm/) em iframe
@@ -7,26 +7,32 @@
  *
  * Carregado via GlobalConfig.DASHBOARD_SCRIPTS — feature nativa do Chatwoot.
  * Não modifica o código do Chatwoot. Sobrevive a upgrades.
+ *
+ * v2: logs verbosos no console + fallback de seletores + injeção tolerante a v4.x.
  */
 (function () {
   'use strict';
 
+  const VERSION = 'v2-2026-05-26';
   const CRM_URL = 'https://atende.salatielbatista.com.br/crm/';
   const ITEM_ID = 'dm-master-crm-nav';
   const OVERLAY_ID = 'dm-master-crm-overlay';
   const BRAND = '#4c9e98';
 
-  // Ícone SVG inline (alvo + funil — combina com a vibe Kanban)
+  const log = (...args) => console.log('[DM-Overlay ' + VERSION + ']', ...args);
+  const warn = (...args) => console.warn('[DM-Overlay ' + VERSION + ']', ...args);
+
+  log('script carregado. readyState =', document.readyState);
+
   const ICON_SVG = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
          stroke="currentColor" stroke-width="2" stroke-linecap="round"
-         stroke-linejoin="round" style="width:18px;height:18px;">
+         stroke-linejoin="round" style="width:20px;height:20px;">
       <rect x="3" y="4" width="5" height="16" rx="1"/>
       <rect x="10" y="4" width="5" height="11" rx="1"/>
       <rect x="17" y="4" width="4" height="7" rx="1"/>
     </svg>`;
 
-  // ---- estilos do item e do overlay ----
   function injectStyles() {
     if (document.getElementById('dm-overlay-styles')) return;
     const css = `
@@ -37,11 +43,12 @@
         justify-content: center;
         width: 2.5rem;
         height: 2.5rem;
-        margin: 0.5rem 0;
+        margin: 0.5rem auto;
         border-radius: 0.5rem;
         color: rgb(51 65 85);
         cursor: pointer;
         transition: background 0.15s, color 0.15s;
+        text-decoration: none;
       }
       #${ITEM_ID}:hover {
         background: rgb(248 250 252);
@@ -57,6 +64,8 @@
       #${ITEM_ID} .dm-tooltip {
         position: absolute;
         left: 3rem;
+        top: 50%;
+        transform: translateY(-50%);
         background: rgb(15 23 42);
         color: #fff;
         padding: 4px 10px;
@@ -113,9 +122,9 @@
     style.id = 'dm-overlay-styles';
     style.textContent = css;
     document.head.appendChild(style);
+    log('estilos injetados');
   }
 
-  // ---- abre/fecha o overlay com o iframe do CRM ----
   function openCRM() {
     let overlay = document.getElementById(OVERLAY_ID);
     if (!overlay) {
@@ -133,6 +142,7 @@
     }
     overlay.classList.add('dm-open');
     document.getElementById(ITEM_ID)?.classList.add('dm-active');
+    log('overlay aberto');
   }
 
   function closeCRM() {
@@ -140,18 +150,17 @@
     document.getElementById(ITEM_ID)?.classList.remove('dm-active');
   }
 
-  // Esc fecha
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.getElementById(OVERLAY_ID)?.classList.contains('dm-open')) {
       closeCRM();
     }
   });
 
-  // ---- inserção do item no menu lateral ----
   function buildMenuItem() {
     const a = document.createElement('a');
     a.id = ITEM_ID;
     a.href = 'javascript:void(0)';
+    a.setAttribute('data-dm-overlay', VERSION);
     a.innerHTML = `${ICON_SVG}<span class="dm-tooltip">Master CRM</span>`;
     a.addEventListener('click', (e) => {
       e.preventDefault();
@@ -160,42 +169,85 @@
     return a;
   }
 
+  // Tenta múltiplos seletores. Retorna o container onde injetar (ou null).
+  // Devolve { container, strategy } para log.
+  function findMenuContainer() {
+    // Estratégia 1 — padrão documentado: div.w-16 + .h-full → primeiro filho .flex.flex-col.items-center
+    const wide = document.querySelectorAll('div.w-16.h-full, div.h-full.w-16');
+    for (const sb of wide) {
+      const upper = sb.querySelector('.flex.flex-col.items-center');
+      if (upper && upper.children.length > 0) {
+        return { container: upper, strategy: 'div.w-16.h-full > .flex.flex-col.items-center' };
+      }
+    }
+
+    // Estratégia 2 — qualquer div.w-16 (sem h-full) com filho .items-center
+    const w16 = document.querySelectorAll('div.w-16');
+    for (const sb of w16) {
+      const upper = sb.querySelector('.flex.flex-col.items-center, .items-center');
+      if (upper && upper.children.length > 0) {
+        return { container: upper, strategy: 'div.w-16 > .items-center' };
+      }
+    }
+
+    // Estratégia 3 — pelo <aside> que envolve sidebar
+    const aside = document.querySelector('aside.app-sidebar, aside.sidebar, aside');
+    if (aside) {
+      const upper = aside.querySelector('.flex.flex-col.items-center, .menu-items, ul');
+      if (upper && upper.children.length > 0) {
+        return { container: upper, strategy: 'aside > items container' };
+      }
+    }
+
+    // Estratégia 4 — procura PrimaryNavItem por aria/role (links de navegação fixos)
+    const navLinks = document.querySelectorAll('a[href*="/dashboard"], a[href*="/conversations"]');
+    if (navLinks.length > 0) {
+      const parent = navLinks[0].parentElement;
+      if (parent && parent.children.length > 0) {
+        return { container: parent, strategy: 'parent of nav link' };
+      }
+    }
+
+    return null;
+  }
+
+  let lastLoggedFail = 0;
+
   function tryInsert() {
     if (document.getElementById(ITEM_ID)) return true;
 
-    // O menu lateral do Chatwoot tem este padrão (v4.x):
-    // <div class="flex flex-col justify-between w-16 h-full bg-white border-r ...">
-    //   <div class="flex flex-col items-center">  ← onde queremos injetar
-    //     <Logo />
-    //     <PrimaryNavItem /> ...
-    //   </div>
-    //   <div class="flex flex-col items-center justify-end pb-6">...</div>
-    // </div>
-    const sidebars = document.querySelectorAll('div.w-16.h-full');
-    for (const sb of sidebars) {
-      // primeiro filho = container superior dos nav items
-      const upper = sb.querySelector('.flex.flex-col.items-center');
-      if (upper && upper.children.length > 0) {
-        upper.appendChild(buildMenuItem());
-        return true;
+    const found = findMenuContainer();
+    if (!found) {
+      const now = Date.now();
+      if (now - lastLoggedFail > 5000) {
+        warn('tryInsert: nenhum container do menu encontrado ainda. URL =', location.href);
+        // dump dos w-16 visíveis pra ajudar a calibrar
+        const w16 = document.querySelectorAll('div.w-16');
+        warn('  candidatos div.w-16 =', w16.length);
+        lastLoggedFail = now;
       }
+      return false;
     }
-    return false;
+
+    found.container.appendChild(buildMenuItem());
+    log('item injetado via estratégia:', found.strategy);
+    return true;
   }
 
-  // O Chatwoot é SPA — o menu pode renderizar depois do nosso script rodar,
-  // ou pode desmontar/remontar em troca de rota. Observador cuida disso.
   function startObserver() {
     injectStyles();
 
-    if (tryInsert()) return;
+    if (tryInsert()) {
+      log('inserção feita no primeiro tick (sem observer)');
+    } else {
+      log('iniciando MutationObserver — menu ainda não montou');
+    }
 
     const obs = new MutationObserver(() => {
-      if (tryInsert()) {
-        // não desconectamos — Chatwoot pode trocar de tela e remover nosso item
-      }
+      tryInsert();
     });
     obs.observe(document.body, { childList: true, subtree: true });
+    log('observer ativo');
   }
 
   if (document.readyState === 'loading') {
