@@ -8,7 +8,7 @@
 set -e
 
 OVERLAY_URL="${OVERLAY_URL:-/dm-overlay/overlay.js}"
-SCRIPT_TAG='<script src="'"$OVERLAY_URL"'?v=1" defer></script>'
+SCRIPT_TAG='<script src="'"$OVERLAY_URL"'?v=3" defer></script>'
 
 echo "Configurando DASHBOARD_SCRIPTS no Chatwoot..."
 echo "  conteúdo: $SCRIPT_TAG"
